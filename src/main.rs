@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env::args;
 use std::error::Error;
 use std::time::Duration;
@@ -9,7 +10,7 @@ use env_logger::{Env, Builder};
 use libp2p::{
     Multiaddr,
     identity, 
-    PeerId, 
+    PeerId,
     StreamProtocol, 
     SwarmBuilder,
     tcp::Config as TcpConfig,
@@ -23,7 +24,8 @@ use libp2p::noise::Config as NoiceConfig;
 use libp2p::identify::{
     Config as IdentifyConfig, 
     Behaviour as IdentifyBehavior, 
-    Event as IdentifyEvent};
+    Event as IdentifyEvent
+};
 
 use libp2p::kad::{
     RoutingUpdate,
@@ -45,7 +47,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let local_key = identity::Keypair::generate_ed25519();
 
-    let mut swarm = SwarmBuilder::with_existing_identity(local_key)
+    let mut swarm = SwarmBuilder::with_existing_identity(local_key.clone())
         .with_tokio()
         .with_tcp(
             TcpConfig::default(), 
@@ -68,7 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 key.clone().public()
             )
             .with_push_listen_addr_updates(true)
-            .with_interval(Duration::from_secs(60));
+            .with_interval(Duration::from_secs(30));
 
             let identify = IdentifyBehavior::new(identity_config);
             AgentBehavior::new(kad, identify)
@@ -78,16 +80,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build();
 
     swarm.behaviour_mut().set_server_mode();
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
     if let Some(addr) = args().nth(1) {
+        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        
         let remote: Multiaddr = addr.parse()?;
         swarm.dial(remote)?;
-        info!("Dialed to: {addr}")
+        info!("Dialed to: {addr}");
     } else {
-        info!("Act as bootstrap node")
+        info!("Act as bootstrap node");
+        swarm.listen_on("/ip4/0.0.0.0/tcp/8000".parse()?)?;
     }
 
+    let mut peers: HashMap<PeerId, Vec<Multiaddr>> = HashMap::new();
     loop {
         match swarm.select_next_some().await {
             SwarmEvent::NewListenAddr { listener_id, address } => info!("NewListenAddr: {listener_id:?} | {address:?}"),
@@ -100,19 +105,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 established_in } => info!("ConnectionEstablished: {peer_id} | {connection_id} | {endpoint:?} | {num_established} | {concurrent_dial_errors:?} | {established_in:?}"),
             SwarmEvent::Dialing { peer_id, connection_id } => info!("Dialing: {peer_id:?} | {connection_id}"),
             SwarmEvent::Behaviour(AgentEvent::Identify(event)) => match event {
+                IdentifyEvent::Sent { peer_id } => info!("IdentifyEvent:Sent: {peer_id}"),
+                IdentifyEvent::Pushed { peer_id, info } => info!("IdentifyEvent:Pushed: {peer_id} | {info:?}"),
                 IdentifyEvent::Received { peer_id, info } => {
                     info!("IdentifyEvent:Received: {peer_id} | {info:?}");
+                    peers.insert(peer_id, info.clone().listen_addrs);    
 
-                    for addr in info.listen_addrs {
+                    for addr in info.clone().listen_addrs {
                         let agent_routing = swarm.behaviour_mut().register_addr(&peer_id, addr.clone());
                         match agent_routing {
                             RoutingUpdate::Failed => error!("IdentifyReceived: Failed to register address to Kademlia"),
                             RoutingUpdate::Pending => warn!("IdentifyReceived: Register address pending"),
                             RoutingUpdate::Success => {
-                                info!("IdentifyReceived: {addr}: Success register address, start bootstrapping...");
+                                info!("IdentifyReceived: {addr}: Success register address");
                             } 
                         }
                     }
+
+                    info!("Available peers: {peers:?}");                        
                 },
                 _ => {}
             },
@@ -142,5 +152,4 @@ async fn main() -> Result<(), Box<dyn Error>> {
             _ => {}
         }
     }
-
 }
