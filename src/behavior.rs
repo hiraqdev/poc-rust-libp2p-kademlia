@@ -12,20 +12,38 @@ use libp2p::identify::{
     Event as IdentifyEvent,
 };
 
+use libp2p::request_response::{Event as RequestResponseEvent, OutboundRequestId, ResponseChannel as RequestResponseChannel};
+use libp2p::request_response::cbor::Behaviour as RequestResponseBehavior;
+
+use crate::message::{GreeRequest, GreetResponse};
+
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "Event")]
 pub(crate) struct Behavior {
     identify: IdentifyBehavior,
-    kad: KademliaBehavior<KademliaInMemory>
+    kad: KademliaBehavior<KademliaInMemory>,
+    rr: RequestResponseBehavior<GreeRequest, GreetResponse>
 }
 
 impl Behavior {
-    pub fn new(kad: KademliaBehavior<KademliaInMemory>, identify: IdentifyBehavior) -> Self {
-        Self { kad, identify }
+    pub fn new(kad: KademliaBehavior<KademliaInMemory>, identify: IdentifyBehavior, rr: RequestResponseBehavior<GreeRequest, GreetResponse>) -> Self {
+        Self { kad, identify, rr  }
     }
 
-    pub fn register_addr(&mut self, peer_id: &PeerId, addr: Multiaddr) -> RoutingUpdate {
+    pub fn register_addr_kad(&mut self, peer_id: &PeerId, addr: Multiaddr) -> RoutingUpdate {
         self.kad.add_address(peer_id, addr)
+    }
+
+    pub fn register_addr_rr(&mut self, peer_id: &PeerId, addr: Multiaddr) -> bool {
+        self.rr.add_address(peer_id, addr)
+    }
+
+    pub fn send_message(&mut self, peer_id: &PeerId, message: GreeRequest) -> OutboundRequestId {
+        self.rr.send_request(peer_id, message)
+    }
+
+    pub fn send_response(&mut self, ch: RequestResponseChannel<GreetResponse>, rs: GreetResponse) -> Result<(), GreetResponse> {
+        self.rr.send_response(ch, rs)
     }
 
     pub fn set_server_mode(&mut self) {
@@ -36,7 +54,8 @@ impl Behavior {
 #[derive(Debug)]
 pub(crate) enum Event {
     Identify(IdentifyEvent),
-    Kad(KademliaEvent)
+    Kad(KademliaEvent),
+    RequestResponse(RequestResponseEvent<GreeRequest, GreetResponse>)
 }
 
 impl From<IdentifyEvent> for Event {
@@ -48,5 +67,11 @@ impl From<IdentifyEvent> for Event {
 impl From<KademliaEvent> for Event {
     fn from(value: KademliaEvent) -> Self {
         Self::Kad(value)
+    }
+}
+
+impl From<RequestResponseEvent<GreeRequest, GreetResponse>> for Event {
+    fn from(value: RequestResponseEvent<GreeRequest, GreetResponse>) -> Self {
+        Self::RequestResponse(value)
     }
 }
